@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from .features import build_features
 from .regime_detector import RegimeDetector, ImpulseEstimator
 from .risk_engine import RiskLimits
+from .anomaly_detector import AnomalyDetector
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "models")
 MIN_IMPULSE_PROBA = float(os.environ.get("MIN_IMPULSE_PROBA", "0.65"))
@@ -21,6 +22,7 @@ app = FastAPI(title="AI Adaptive Trading Engine")
 
 _regime_model = None
 _impulse_model = None
+_anomaly_model = None
 
 
 class Candle(BaseModel):
@@ -40,13 +42,18 @@ class SignalRequest(BaseModel):
 
 @app.on_event("startup")
 def load_models():
-    global _regime_model, _impulse_model
+    global _regime_model, _impulse_model, _anomaly_model
     try:
         _regime_model = RegimeDetector.load(os.path.join(MODEL_DIR, "regime_model"))
         _impulse_model = ImpulseEstimator.load(os.path.join(MODEL_DIR, "impulse_model"))
         print("Modèles chargés.")
     except FileNotFoundError:
         print("ATTENTION : modèles non trouvés. Entraîne-les d'abord avec train.py.")
+    try:
+        _anomaly_model = AnomalyDetector.load(os.path.join(MODEL_DIR, "anomaly_model"))
+        print("Détecteur d'anomalie chargé.")
+    except FileNotFoundError:
+        print("Détecteur d'anomalie non trouvé (optionnel, désactivé pour l'instant).")
 
 
 @app.get("/health")
@@ -83,6 +90,14 @@ def get_signal(req: SignalRequest):
         decision = "vente"
         confidence_ok = True
 
+    is_anomaly = False
+    anomaly_score = None
+    if _anomaly_model is not None:
+        anomaly_score, is_anomaly = _anomaly_model.check(last)
+        if is_anomaly:
+            decision = "aucun_trade"
+            confidence_ok = False
+
     return {
         "symbol": req.symbol,
         "regime": regime,
@@ -91,4 +106,6 @@ def get_signal(req: SignalRequest):
         "proba_none": round(proba_none, 4),
         "decision": decision,
         "confidence_ok": confidence_ok,
+        "market_anomaly": is_anomaly,
+        "anomaly_score": round(anomaly_score, 4) if anomaly_score is not None else None,
     }
