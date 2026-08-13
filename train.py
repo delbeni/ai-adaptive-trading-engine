@@ -1,18 +1,11 @@
 """
 train.py
 --------
-Entraîne les deux modèles à partir d'un export MT5 (CSV) et sauvegarde
-dans models/. Respecte le split anti-overfitting discuté :
-
-    10 ans -> entraînement (train)
-    2 ans  -> validation (utilisé pour choisir les hyperparamètres)
-    2-3 ans -> test totalement inconnu (à N'UTILISER QU'UNE FOIS, à la fin)
+Entraîne les modèles à partir d'un export MT5 (CSV) et sauvegarde
+dans models/. Split chronologique strict train/validation/test réservé.
 
 Usage :
     python train.py --csv data/XAUUSD_H1.csv --symbol XAUUSD
-
-Export MT5 : clic droit sur le graphique -> "Exporter les données" ->
-             ou via Terminal -> Historique des cotations -> Exporter.
 """
 
 import argparse
@@ -21,6 +14,7 @@ import pandas as pd
 
 from regime_engine.features import load_mt5_csv, build_features
 from regime_engine.regime_detector import RegimeDetector, ImpulseEstimator, make_impulse_labels
+from regime_engine.anomaly_detector import AnomalyDetector
 
 
 def chronological_split(df: pd.DataFrame, train_frac=0.70, val_frac=0.15):
@@ -34,7 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True, help="Chemin vers l'export MT5 CSV")
     parser.add_argument("--symbol", default="XAUUSD")
-    parser.add_argument("--horizon", type=int, default=10, help="Bougies dans le futur pour définir l'impulsion")
+    parser.add_argument("--horizon", type=int, default=10)
     parser.add_argument("--atr-multiple", type=float, default=1.0)
     parser.add_argument("--out", default="models")
     args = parser.parse_args()
@@ -51,7 +45,6 @@ def main():
     train_df, val_df, test_df = chronological_split(feats)
     print(f"Train: {len(train_df)} | Validation: {len(val_df)} | Test (réservé): {len(test_df)}")
 
-    # --- Régime (non-supervisé, entraîné sur train uniquement) ---
     print("\nEntraînement du détecteur de régime...")
     regime_model = RegimeDetector(n_regimes=5).fit(train_df)
     regime_model.save(os.path.join(args.out, "regime_model"))
@@ -59,12 +52,15 @@ def main():
     train_df["regime"] = regime_model.predict(train_df)
     print(train_df["regime"].value_counts())
 
-    # --- Impulsion (supervisé, split interne train/val déjà géré dans fit()) ---
     print("\nEntraînement de l'estimateur d'impulsion...")
     impulse_model = ImpulseEstimator().fit(train_df, horizon=args.horizon, atr_multiple=args.atr_multiple)
     impulse_model.save(os.path.join(args.out, "impulse_model"))
 
-    # --- Évaluation FINALE sur le test set jamais vu (une seule fois) ---
+    print("\nEntraînement du détecteur d'anomalie...")
+    anomaly_model = AnomalyDetector(contamination=0.02).fit(train_df)
+    anomaly_model.save(os.path.join(args.out, "anomaly_model"))
+    print("Détecteur d'anomalie entraîné et sauvegardé.")
+
     print("\n=== Évaluation sur le TEST SET réservé (jamais vu pendant l'entraînement) ===")
     test_labels = make_impulse_labels(test_df, args.horizon, args.atr_multiple)
     valid = test_labels.notna()
